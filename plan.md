@@ -1,0 +1,140 @@
+﻿# Plan for Clinical Reasoning Question Generation (vLLM)
+
+## Stage 1: Clinical/Medical Reasoning Question Extraction
+1. Ingest each JSONL line as one article record (keep the full line as `raw_text`, and parse the primary context field into `input_text`).
+2. Field selection for `input_text` (choose the single field that carries the most context):
+   - `meta_analysis_clean.jsonl` and `systematic_review_clean.jsonl`: use `context` (fallback to `abstract_text` + `sections_clean` if `context_truncated=true`).
+   - `original.jsonl`: use `sections` (fallback to `abstract`, then `tables` if needed).
+   - `trials.jsonl`: use `sections` (fallback to `abstract`, then append `outcomes` and `tables` if present).
+3. If `raw_text` is too long for the model context, run a lightweight "clinical anchors" pass to extract:
+   - Core condition(s), population, interventions/exposures, outcomes, key labs/imaging, mechanisms, and confounders.
+   - Target specialty focus (prefer nephrology; otherwise internal medicine).
+4. For each article record, use 4 prompt variants (Prompt #1 from `prompts.md` + Prompts #2-#4) so each line produces 4 questions total.
+5. Enforce strict output format: a single JSON object with a `"question"` field; no extra keys or text.
+6. Apply quality checks on each output:
+   - JSON parseable, one question, self-contained, complex reasoning, nephro/internal med leaning.
+   - Minimum length threshold and keyword coverage (e.g., labs, mechanisms, or treatment decision).
+7. Save outputs as JSONL with metadata: `source_file`, `line_index`, `prompt_id`, `model_id`, `question`.
+
+## End-to-End vLLM Pipeline Plan
+
+### 1) Inputs / Outputs
+- Inputs: `input/systematic_review_clean.jsonl`, `input/meta_analysis_clean.jsonl`, `input/original.jsonl`, `input/trials.jsonl`.
+- Outputs: `output/{model_id}/{source_file}.questions.jsonl` with one record per prompt per line.
+- Keep deterministic mappings: `article_id = {source_file}:{line_index}`.
+
+### 2) Prompt Set
+- Use the 4 prompts in `prompts.md` (Prompt #1 + Prompts #2-#4).
+- All prompts generate exactly one complex clinical question in JSON format.
+
+### 3) vLLM Serving (OpenAI-Compatible)
+- Run one `vllm serve` instance per model (or multi-model server if supported).
+- Use Chat Completions with a fixed system message ("Output only JSON with a single `question` field; do not include reasoning or extra text").
+- Ensure a chat template is available for each model; without a chat template, Chat Completions requests will fail. If needed, pass `--chat-template` or provide a preformatted prompt.
+- Reasoning outputs are only available via `/v1/chat/completions` and require a supported `--reasoning-parser`; enable only for debugging.
+- If you want to ignore model-provided `generation_config.json`, launch with `--generation-config vllm`.
+- Use `extra_body` for vLLM-specific request parameters (e.g., `top_k` or `chat_template_kwargs`).
+
+
+
+### 4) Model Configuration (YAML-Driven)
+Create a YAML config to switch models and hardware profiles without code changes.
+
+Example structure:
+```yaml
+models:
+  deepseek_v3_2_awq:
+    model_id: "QuantTrio/DeepSeek-V3.2-AWQ"
+    served_model_name: "deepseek_v3_2_awq"
+    quantization: "awq"
+    max_model_len: null
+    dtype: "auto"
+    sampling_defaults:
+      temperature: 1.0
+      top_p: 0.95
+  gpt_oss_120b:
+    model_id: "openai/gpt-oss-120b"
+    served_model_name: "gpt_oss_120b"
+    max_model_len: 131072
+    dtype: "bfloat16"
+    sampling_defaults:
+      temperature: 1.0
+      top_p: 1.0
+  glm_4_7_flash:
+    model_id: "zai-org/GLM-4.7-Flash"
+    served_model_name: "glm_4_7_flash"
+    max_model_len: 131072
+    dtype: "bfloat16"
+    sampling_defaults:
+      temperature: 1.0
+      top_p: 0.95
+      max_new_tokens: 131072
+  glm_4_7:
+    model_id: "zai-org/GLM-4.7"
+    served_model_name: "glm_4_7"
+    max_model_len: 131072
+    dtype: "bfloat16"
+    sampling_defaults:
+      temperature: 1.0
+      top_p: 0.95
+      max_new_tokens: 131072
+
+hardware_profiles:
+  rtx_4070ti_1x:
+    tensor_parallel_size: 1
+    pipeline_parallel_size: 1
+    gpu_memory_utilization: 0.90
+    max_num_seqs: 32
+    max_num_batched_tokens: 8192
+  rtx_4090_3x:
+    tensor_parallel_size: 3
+    pipeline_parallel_size: 1
+    gpu_memory_utilization: 0.92
+    max_num_seqs: 96
+    max_num_batched_tokens: 32768
+  h100_1x:
+    tensor_parallel_size: 1
+    pipeline_parallel_size: 1
+    gpu_memory_utilization: 0.92
+    max_num_seqs: 128
+    max_num_batched_tokens: 65536
+  h100_8x:
+    tensor_parallel_size: 8
+    pipeline_parallel_size: 1
+    gpu_memory_utilization: 0.94
+    max_num_seqs: 512
+    max_num_batched_tokens: 262144
+```
+
+### 5) Server Launch Plan
+- Build a launcher that reads the YAML and builds `vllm serve` CLI args:
+  - `--model`, `--served-model-name`, `--max-model-len`, `--dtype`.
+  - `--tensor-parallel-size` and (if needed) `--pipeline-parallel-size`.
+  - `--quantization` for 4-bit models (AWQ/GPTQ/etc).
+  - `--max-num-seqs`, `--max-num-batched-tokens`, and `--gpu-memory-utilization`.
+- If using reasoning outputs, add `--enable-reasoning` and `--reasoning-parser <model>` only for supported models.
+
+### 6) Batch Generation Strategy
+- Use an async client to submit many concurrent Chat Completions requests.
+- For each article line, issue 4 requests (one per prompt); batch across articles to keep the server saturated.
+- Set `max_tokens` near the model's max output window (bounded by `max_model_len` minus prompt tokens).
+- Use model-specific default sampling values from each model card (see section 7).
+
+### 7) Model-Specific Notes
+- DeepSeek-V3.2: no Jinja chat template; use the official encoding/decoding helpers or provide a template explicitly for Chat Completions.
+- DeepSeek-V3.2-Speciale: deep reasoning only and does not support tool calling (keep tool calling off).
+- DeepSeek-V3.2 recommended sampling defaults: temperature 1.0, top_p 0.95.
+- DeepSeek-V3.2 is not listed in vLLM's reasoning-parser model list (DeepSeek-R1 and DeepSeek-V3.1 are); try using v3.1 parser if possible.
+- GLM-4.7: default eval settings are temperature 1.0, top_p 0.95, max new tokens 131072; vLLM supports tool call parsing with `--tool-call-parser glm47` and reasoning content parsing with `--reasoning-parser glm45` if you choose to expose reasoning.
+- GLM-4.7 thinking mode is enabled by default in vLLM; disable per request with `chat_template_kwargs` (e.g., `enable_thinking=False`) if you want only the final answer.
+- GLM-4.7-Flash: same default eval settings as GLM-4.7; vLLM support is on the main branch/nightly and may require the latest Transformers from GitHub for best compatibility.
+- gpt-oss-120b: recommended sampling is temperature 1.0 and top_p 1.0; prompts must be rendered in Harmony format (Transformers chat template or openai-harmony). vLLM usage is documented with a gpt-oss-specific vLLM build (e.g., `vllm==0.10.1+gptoss`).
+
+### 8) Output Validation & QA
+- Validate JSON strictly; re-run or discard invalid outputs.
+- Reject questions that are too short, non-medical, or not self-contained.
+- Keep per-model logs: latency, throughput, token counts, failure rates.
+
+### 9) Reproducibility & Observability
+- Store exact model IDs, vLLM version, and config snapshots with each run.
+- Keep a small sampled QA set for manual review across all 4 prompts and all file types.
