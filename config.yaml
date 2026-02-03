@@ -1,0 +1,62 @@
+models:
+  deepseek_v3_2_awq:
+    model_id: "QuantTrio/DeepSeek-V3.2-AWQ"
+    served_model_name: "deepseek_v3_2_awq"
+    quantization: "awq"
+    max_model_len:
+    dtype: "auto"
+    sampling_defaults:
+      temperature: 1.0
+      top_p: 0.95
+  gpt_oss_120b:
+    model_id: "openai/gpt-oss-120b"
+    served_model_name: "gpt_oss_120b"
+    max_model_len: 131072
+    dtype: "bfloat16"
+    sampling_defaults:
+      temperature: 1.0
+      top_p: 1.0
+  glm_4_7_flash:
+    model_id: "zai-org/GLM-4.7-Flash"
+    served_model_name: "glm_4_7_flash"
+    max_model_len: 131072
+    dtype: "bfloat16"
+    sampling_defaults:
+      temperature: 1.0
+      top_p: 0.95
+      max_new_tokens: 131072
+  glm_4_7:
+    model_id: "zai-org/GLM-4.7"
+    served_model_name: "glm_4_7"
+    max_model_len: 131072
+    dtype: "bfloat16"
+    sampling_defaults:
+      temperature: 1.0
+      top_p: 0.95
+      max_new_tokens: 131072
+
+hardware_profiles:
+  rtx_4060ti_1x:
+    tensor_parallel_size: 1
+    pipeline_parallel_size: 1
+    gpu_memory_utilization: 0.90
+    max_num_seqs: 32
+    max_num_batched_tokens: 8192
+  rtx_4090_3x:
+    tensor_parallel_size: 3
+    pipeline_parallel_size: 1
+    gpu_memory_utilization: 0.92
+    max_num_seqs: 96
+    max_num_batched_tokens: 32768
+  h100_1x:
+    tensor_parallel_size: 1
+    pipeline_parallel_size: 1
+    gpu_memory_utilization: 0.92
+    max_num_seqs: 128
+    max_num_batched_tokens: 65536
+  h100_8x:
+    tensor_parallel_size: 8
+    pipeline_parallel_size: 1
+    gpu_memory_utilization: 0.94
+    max_num_seqs: 512
+    max_num_batched_tokens: 262144

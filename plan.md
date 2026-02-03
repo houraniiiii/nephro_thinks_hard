@@ -80,7 +80,7 @@ models:
       max_new_tokens: 131072
 
 hardware_profiles:
-  rtx_4070ti_1x:
+  rtx_4060ti_1x:
     tensor_parallel_size: 1
     pipeline_parallel_size: 1
     gpu_memory_utilization: 0.90

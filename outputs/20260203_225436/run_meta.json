@@ -1,0 +1,1 @@
+{"model_key":"deepseek_v3_2_awq","hardware_key":"rtx_4060ti_1x","base_url":"http://localhost:8000/v1","inputs":["input/systematic_review_clean.jsonl","input/meta_analysis_clean.jsonl","input/original.jsonl","input/trials.jsonl"],"concurrency":32,"max_retries":1,"min_question_chars":160,"require_nephro":true,"vllm_version":"unknown"}
